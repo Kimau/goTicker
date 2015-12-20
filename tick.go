@@ -3,8 +3,10 @@ package tickremind
 import (
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/net/context"
@@ -30,10 +32,17 @@ type TickEntryValue struct {
 	Value int
 }
 
+type HtmlTickObj struct {
+	RuleName string
+	RuleKey  string
+	Entries  []TickEntryValue
+}
+
 //---------------------------------------- Setup Functions
 
 func init() {
 	http.HandleFunc("/", root)
+	http.HandleFunc("/rules", getRules)
 	http.HandleFunc("/create_user", createTickUser)
 	http.HandleFunc("/create_rule/", createTickRule)
 	http.HandleFunc("/tick/", makeTick)
@@ -48,13 +57,143 @@ func tickSettingsKey(ctx context.Context, u *user.User) *datastore.Key {
 	return datastore.NewKey(ctx, TICK_SETTINGS_KIND, u.String(), 0, nil)
 }
 
+//---------------------------------------- Useful Funcs
+
+const HTML_CREATE_USER_FORM = `
+<form action="/create_user" method="post">
+ <div><input type="submit" value="Create User"></div>
+</form>`
+
 //---------------------------------------- API Funcs
 
 func root(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprint(w, "Hello, world!")
+	ctx := appengine.NewContext(r)
+
+	// Get User
+	u := user.Current(ctx)
+	if u == nil {
+		http.Error(w, "User Must Log In", http.StatusBadRequest)
+		return
+	}
+
+	// Get User Settings
+	var settingObj UserSettings
+	usrKey := tickSettingsKey(ctx, u)
+	if errDB := datastore.Get(ctx, usrKey, &settingObj); errDB != nil {
+		fmt.Fprintf(w, "<div>Please create your user entry... %s</div> %s", errDB.Error(), HTML_CREATE_USER_FORM)
+		return
+	}
+
+	htmlObj := struct {
+		HasPebble bool
+		Twitter   string
+		Rules     []HtmlTickObj
+	}{
+		HasPebble: settingObj.HasPebble,
+		Twitter:   settingObj.Twitter,
+	}
+
+	// Get Rules
+	ruleQ := datastore.NewQuery(TICK_RULE).Ancestor(usrKey).Order("RuleName")
+	iter := ruleQ.Run(ctx)
+	for {
+		var tr TickRule
+		k, err := iter.Next(&tr)
+		if err == datastore.Done {
+			break // No further entities match the query.
+		}
+
+		hto := HtmlTickObj{
+			RuleName: tr.RuleName,
+			RuleKey:  k.Encode(),
+		}
+
+		q := datastore.NewQuery(TICK_ENTRY_VALUE).Ancestor(k).Order("When").Limit(356)
+		_, errEntQ := q.GetAll(ctx, &hto.Entries)
+		if errEntQ != nil {
+			http.Error(w, errEntQ.Error(), http.StatusBadRequest)
+			return
+		}
+
+		htmlObj.Rules = append(htmlObj.Rules, hto)
+	}
+
+	t, e := template.ParseFiles("root.html")
+	if e != nil {
+		fmt.Fprintf(w, "-- TEMPLATE ERROR --\n %s", e.Error())
+	}
+
+	t.Execute(w, htmlObj)
+}
+
+func getRules(w http.ResponseWriter, r *http.Request) {
+	ctx := appengine.NewContext(r)
+
+	// Get User
+	u := user.Current(ctx)
+	if u == nil {
+		http.Error(w, "User Must Log In", http.StatusBadRequest)
+		return
+	}
+
+	// Get User Settings
+	var settingObj UserSettings
+	usrKey := tickSettingsKey(ctx, u)
+	if errDB := datastore.Get(ctx, usrKey, &settingObj); errDB != nil {
+		fmt.Fprintf(w, "<div>Please create your user entry... %s</div> %s", errDB.Error(), HTML_CREATE_USER_FORM)
+		return
+	}
+
+	htmlObj := struct {
+		HasPebble bool
+		Twitter   string
+		Rules     []HtmlTickObj
+	}{
+		HasPebble: settingObj.HasPebble,
+		Twitter:   settingObj.Twitter,
+	}
+
+	// Get Rules
+	ruleQ := datastore.NewQuery(TICK_RULE).Ancestor(usrKey).Order("RuleName")
+	iter := ruleQ.Run(ctx)
+	for {
+		var tr TickRule
+		k, err := iter.Next(&tr)
+		if err == datastore.Done {
+			break // No further entities match the query.
+		}
+
+		hto := HtmlTickObj{
+			RuleName: tr.RuleName,
+			RuleKey:  k.Encode(),
+		}
+
+		q := datastore.NewQuery(TICK_ENTRY_VALUE).Ancestor(k).Order("When").Limit(356)
+		_, errEntQ := q.GetAll(ctx, &hto.Entries)
+		if errEntQ != nil {
+			http.Error(w, errEntQ.Error(), http.StatusBadRequest)
+			return
+		}
+
+		htmlObj.Rules = append(htmlObj.Rules, hto)
+	}
+
+	jObj, errJson := json.Marshal(htmlObj)
+	if errJson != nil {
+		http.Error(w, errJson.Error(), 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(jObj)
 }
 
 func createTickUser(w http.ResponseWriter, r *http.Request) {
+	if strings.ToLower(r.Method) != "post" {
+		http.Error(w, "Must be POST", http.StatusBadRequest)
+		return
+	}
+
 	ctx := appengine.NewContext(r)
 	u := user.Current(ctx)
 	if u == nil {
@@ -63,8 +202,17 @@ func createTickUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var settingObj UserSettings
-	if errDB := datastore.Get(ctx, tickSettingsKey(ctx, u), settingObj); errDB != datastore.ErrNoSuchEntity {
+	k := tickSettingsKey(ctx, u)
+	if errDB := datastore.Get(ctx, k, settingObj); errDB != datastore.ErrNoSuchEntity {
 		http.Error(w, fmt.Sprintf("User already exists: %s", errDB.Error()), 500)
+		return
+	}
+
+	settingObj.HasPebble = false
+	settingObj.Twitter = u.Email[:strings.Index(u.Email, "@")]
+
+	if _, err := datastore.Put(ctx, k, &settingObj); err != nil {
+		http.Error(w, err.Error(), 500)
 		return
 	}
 
@@ -79,6 +227,11 @@ func createTickUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func createTickRule(w http.ResponseWriter, r *http.Request) {
+	if strings.ToLower(r.Method) != "post" {
+		http.Error(w, fmt.Sprintf("Must be POST not %s", r.Method), http.StatusBadRequest)
+		return
+	}
+
 	ctx := appengine.NewContext(r)
 	u := user.Current(ctx)
 	if u == nil {
@@ -95,7 +248,7 @@ func createTickRule(w http.ResponseWriter, r *http.Request) {
 
 	bucketStr := r.FormValue("bucket")
 	switch bucketStr {
-	case "hourly":
+	case "hour":
 		tRule.IsBucketed = true
 		tRule.Bucket = int64(time.Hour * 1)
 		break
@@ -144,6 +297,11 @@ func createTickRule(w http.ResponseWriter, r *http.Request) {
 }
 
 func makeTick(w http.ResponseWriter, r *http.Request) {
+	if strings.ToLower(r.Method) != "post" {
+		http.Error(w, "Must be POST", http.StatusBadRequest)
+		return
+	}
+
 	ctx := appengine.NewContext(r)
 	u := user.Current(ctx)
 	if u == nil {
@@ -151,9 +309,17 @@ func makeTick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kStr := r.URL.Query().Get("key")
+	kStr := r.FormValue("key")
 	if len(kStr) < 3 {
 		http.Error(w, "Key not set", 400)
+		return
+	}
+
+	// Value
+
+	iValue, err := strconv.Atoi(r.FormValue("value"))
+	if err != nil {
+		http.Error(w, err.Error(), 400)
 		return
 	}
 
@@ -161,7 +327,7 @@ func makeTick(w http.ResponseWriter, r *http.Request) {
 	// Get Entry Value
 	t := TickEntryValue{
 		When:  time.Now(),
-		Value: 1,
+		Value: iValue,
 	}
 
 	trKey, errKey := datastore.DecodeKey(kStr)

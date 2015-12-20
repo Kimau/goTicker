@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"golang.org/x/net/context"
@@ -21,7 +22,7 @@ type UserSettings struct {
 type TickRule struct {
 	RuleName   string
 	IsBucketed bool
-	Bucket     time.Duration
+	Bucket     int64
 }
 
 type TickEntryValue struct {
@@ -62,8 +63,8 @@ func createTickUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var settingObj UserSettings
-	if errDB := datastore.Get(ctx, tickSettingsKey(ctx, u), settingObj); errDB != nil {
-		http.Error(w, errDB.Error(), 500)
+	if errDB := datastore.Get(ctx, tickSettingsKey(ctx, u), settingObj); errDB != datastore.ErrNoSuchEntity {
+		http.Error(w, fmt.Sprintf("User already exists: %s", errDB.Error()), 500)
 		return
 	}
 
@@ -87,9 +88,30 @@ func createTickRule(w http.ResponseWriter, r *http.Request) {
 
 	// Setup Tick Rule
 	tRule := TickRule{
-		Bucket:     0,
-		IsBucketed: false,
-		RuleName:   "Test",
+		Bucket:     int64(time.Minute * 15),
+		IsBucketed: true,
+		RuleName:   r.FormValue("name"),
+	}
+
+	bucketStr := r.FormValue("bucket")
+	switch bucketStr {
+	case "hourly":
+		tRule.IsBucketed = true
+		tRule.Bucket = int64(time.Hour * 1)
+		break
+	case "day":
+		tRule.IsBucketed = true
+		tRule.Bucket = int64(time.Hour * 24)
+		break
+	default:
+
+		i, err := strconv.Atoi(bucketStr)
+		if err == nil {
+			tRule.IsBucketed = true
+			tRule.Bucket = int64(time.Minute) * int64(i)
+		}
+
+		break
 	}
 
 	newKey := datastore.NewIncompleteKey(ctx, TICK_RULE, tickSettingsKey(ctx, u))
@@ -129,16 +151,21 @@ func makeTick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	kStr := r.URL.Query().Get("key")
+	if len(kStr) < 3 {
+		http.Error(w, "Key not set", 400)
+		return
+	}
+
 	// Tick Rule Key from Request
 	// Get Entry Value
-
 	t := TickEntryValue{
 		When:  time.Now(),
 		Value: 1,
 	}
 
-	trKey, errKey := datastore.DecodeKey("")
-	if errKey != nil {
+	trKey, errKey := datastore.DecodeKey(kStr)
+	if (errKey != nil) || (trKey == nil) {
 		http.Error(w, errKey.Error(), 500)
 		return
 	}

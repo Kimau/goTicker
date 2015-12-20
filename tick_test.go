@@ -1,6 +1,8 @@
 package tickremind
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,7 +12,7 @@ import (
 	"google.golang.org/appengine/user"
 )
 
-func makeValidPostReq(t *testing.T, inst aetest.Instance, con context.Context, url string, h http.HandlerFunc) {
+func makeValidPostReq(t *testing.T, inst aetest.Instance, con context.Context, url string, h http.HandlerFunc) string {
 	req, err := inst.NewRequest("POST", url, nil)
 	if err != nil {
 		t.Fatalf("Failed to create req: %v", err)
@@ -23,13 +25,14 @@ func makeValidPostReq(t *testing.T, inst aetest.Instance, con context.Context, u
 	rt := httptest.NewRecorder()
 	h(rt, req)
 
+	bStr := rt.Body.String()
+
+	t.Log(rt.Code, bStr)
 	if rt.Code > 299 {
-		t.Error(rt.Body)
 		t.Fail()
-	} else {
-		t.Log(rt.Code, rt.Body)
 	}
 
+	return bStr
 }
 
 func TestCreateUsers(t *testing.T) {
@@ -41,11 +44,19 @@ func TestCreateUsers(t *testing.T) {
 
 	con, closeFunc, err := aetest.NewContext()
 
-	makeValidPostReq(t, inst, con, "/", root)
-	makeValidPostReq(t, inst, con, "/create_user", createTickUser)
-	makeValidPostReq(t, inst, con, "/create_rule/weight?bucket=day", createTickRule)
-	makeValidPostReq(t, inst, con, "/tick/weight/123", makeTick)
-	makeValidPostReq(t, inst, con, "/tick/weight/256", makeTick)
+	var rsp string
+
+	rsp = makeValidPostReq(t, inst, con, "/", root)
+	rsp = makeValidPostReq(t, inst, con, "/create_user", createTickUser)
+	rsp = makeValidPostReq(t, inst, con, "/create_rule/?name=weight&bucket=day", createTickRule)
+
+	jObj := struct{ Key string }{Key: "empty"}
+	errJ := json.Unmarshal([]byte(rsp), &jObj)
+	if errJ != nil {
+		t.Log(errJ)
+	}
+	rsp = makeValidPostReq(t, inst, con, fmt.Sprintf("/tick/123?key=%s", jObj.Key), makeTick)
+	rsp = makeValidPostReq(t, inst, con, fmt.Sprintf("/tick/256?key=%s", jObj.Key), makeTick)
 
 	closeFunc()
 

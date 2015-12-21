@@ -1,6 +1,7 @@
 package tickremind
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -44,8 +45,9 @@ func init() {
 	http.HandleFunc("/", root)
 	http.HandleFunc("/rules", getRules)
 	http.HandleFunc("/create_user", createTickUser)
-	http.HandleFunc("/create_rule/", createTickRule)
-	http.HandleFunc("/tick/", makeTick)
+	http.HandleFunc("/create_rule", createTickRule)
+	http.HandleFunc("/tick", makeTick)
+	http.HandleFunc("/tick_csv", makeTickList)
 }
 
 //---------------------------------------- Key Users
@@ -60,8 +62,8 @@ func tickSettingsKey(ctx context.Context, u *user.User) *datastore.Key {
 //---------------------------------------- Useful Funcs
 
 const HTML_CREATE_USER_FORM = `
-<form action="/create_user" method="post">
- <div><input type="submit" value="Create User"></div>
+<form action="/create_user" method="post"> 
+<div><input type="submit" value="Create User"></div>
 </form>`
 
 //---------------------------------------- API Funcs
@@ -316,7 +318,6 @@ func makeTick(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Value
-
 	iValue, err := strconv.Atoi(r.FormValue("value"))
 	if err != nil {
 		http.Error(w, err.Error(), 400)
@@ -363,4 +364,98 @@ func makeTick(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(jObj)
+}
+
+func makeTickList(w http.ResponseWriter, r *http.Request) {
+	if strings.ToLower(r.Method) != "post" {
+		http.Error(w, "Must be POST", http.StatusBadRequest)
+		return
+	}
+
+	ctx := appengine.NewContext(r)
+	u := user.Current(ctx)
+	if u == nil {
+		http.Error(w, "User Must Log In", http.StatusBadRequest)
+		return
+	}
+
+	// Decoder
+	decoder := csv.NewReader(r.Body)
+	records, errDec := decoder.ReadAll()
+
+	if errDec != nil {
+		http.Error(w, errDec.Error(), 500)
+		return
+	}
+
+	var newRuleKey *datastore.Key
+	keyList := []*datastore.Key{}
+	dataList := []*TickEntryValue{}
+
+	// ---- LINE LOOP BEGIN
+	for _, line := range records {
+		if line[0] == "-" {
+
+			// ---- POST RESULT
+			if len(keyList) > 0 {
+				// Multi Put
+				_, errDB := datastore.PutMulti(ctx, keyList, dataList)
+				if errDB != nil {
+					http.Error(w, fmt.Sprintf("LOOP PUT %s", errDB.Error()), 500)
+					return
+				}
+
+				// Clear
+				keyList = []*datastore.Key{}
+				dataList = []*TickEntryValue{}
+			}
+
+			// --- NEW Tick Rule
+			tRule := TickRule{
+				Bucket:     int64(time.Hour * 24),
+				IsBucketed: true,
+				RuleName:   line[1],
+			}
+
+			newRuleKey = datastore.NewIncompleteKey(ctx, TICK_RULE, tickSettingsKey(ctx, u))
+			var errDB error
+			newRuleKey, errDB = datastore.Put(ctx, newRuleKey, &tRule)
+			if errDB != nil {
+				http.Error(w, fmt.Sprintf("Entity Rule %s", errDB.Error()), 500)
+				return
+			}
+		} else {
+			// Normal Entry
+			t, e := time.Parse("02/01/2006", line[0])
+			if e != nil {
+				http.Error(w, e.Error(), 500)
+				return
+			}
+
+			// Value
+			iValue, err := strconv.Atoi(line[1])
+			if err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+
+			tick := TickEntryValue{
+				When:  t,
+				Value: iValue,
+			}
+
+			newKey := datastore.NewIncompleteKey(ctx, TICK_ENTRY_VALUE, newRuleKey)
+			dataList = append(dataList, &tick)
+			keyList = append(keyList, newKey)
+		}
+	}
+
+	// Post Final
+	_, errDB := datastore.PutMulti(ctx, keyList, dataList)
+	if errDB != nil {
+		http.Error(w, fmt.Sprintf("FINAL PUT %s", errDB.Error()), 500)
+		return
+	}
+
+	fmt.Fprintln(w, "All Done")
 }

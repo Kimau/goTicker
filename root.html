@@ -3,6 +3,56 @@
 <head>
   <title>Tick Root</title>
 </head>
+<style type="text/css">
+.entry {
+    display: inline-block;
+    width: 15px;
+    height: 15px;
+    font-size: 10px;
+    text-align: center;
+    margin: 1px;
+}
+
+.week {
+    display: block;
+    line-height: 10px;
+}
+
+.right {
+    text-align: right;
+}
+
+.ruleBox {
+    margin: 10px;
+    padding: 10px;
+    border: 4px solid #333;
+}
+
+.month {
+    display: inline-block;
+    width: 119px;
+    height: 124px;
+    vertical-align: top;
+    margin: 5px;
+    border: 2px solid #333;
+}
+
+.monthStart {
+  display: block;
+    text-align: center;
+    font-size: 20px;
+    line-height: 20px;
+    background: #DDD;
+}
+
+.g0 {
+    background: #F99;
+}
+
+.g1 {
+    background: #9F9;
+}
+</style>
 <body>
 
 <div class="report">
@@ -10,23 +60,26 @@
   <span>@{{.Twitter}}</span>
   
   {{range $index, $element := .Rules}}
-  <h3 class="rule">{{.RuleName}}</h3>
-    {{range $index, $element := .Entries}}
-      <span class="entry">{{.Value}}</span>
-    {{end}}
+    <div class="ruleBox">
+      <h3 class="rule">{{.RuleName}}</h3>
+    {{range $index, $element := .Entries}}{{if eq $index 0}}<div class="month"><span class="monthStart">{{.When.Month}}</span><div class="week right">{{else if eq .When.Day 1}}</div></div><div class="month"><span class="monthStart">{{.When.Month}}</span><div class="week right">{{else if eq .When.Weekday 1}}</div><div class="week">{{end}}<span class="entry g{{.Value}}"></span>{{end}}</div></div>
 
-    <form action="/tick/" method="post">
+    <form action="/tick" method="post">
       <div>
       <input type="hidden" name="key" value="{{.RuleKey}}" />
       <input type="number" name="value" value="1" />
       <input type="submit" value="Tick" />
       </div>
     </form>
+
+    </div>
   {{end}}
 </div>
 
+<hr/>
+
 <div class="newRule">
-<form action="/create_rule/" method="post">
+<form action="/create_rule" method="post">
  <div>
  <input type="text" value="Rule Name" name="name" />
  <select name="bucket">
